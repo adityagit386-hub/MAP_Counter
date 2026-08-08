@@ -12,7 +12,6 @@ CertiMAP AI is a local full-stack certificate verification and MAP point calcula
 ## Run
 
 ```powershell
-cd C:\Users\walea\.codex\visualizations\2026\08\07\019fdd38-66d0-7443-b504-09a76de7212c\certimap-ai
 python server.py
 ```
 
