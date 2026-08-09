@@ -19,7 +19,16 @@ Open http://127.0.0.1:8765
 
 ## Demo Logins
 
-- Student: `student@certimap` / `student123`
+- Student: `student@certimap.local` / `student123`
+- Faculty: `faculty@certimap.local` / `faculty123`
+- Admin: `admin@certimap.local` / `admin123`
+
+## OAuth Login
+
+Google and LinkedIn buttons are available on the login page. To enable them, set these environment variables before starting the server:
+
+- `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
+- `LINKEDIN_CLIENT_ID` and `LINKEDIN_CLIENT_SECRET`
 
 ## Storage
 
