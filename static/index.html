@@ -79,7 +79,17 @@
               <p class="eyebrow">Certificate verification workspace</p>
               <h2 id="pageTitle">Overview</h2>
             </div>
-            <div class="user-pill" id="userPill"></div>
+            <div class="topbar-actions">
+              <button id="notifButton" class="icon-btn" aria-label="Notifications" type="button">
+                <span class="icon-bell" aria-hidden="true">🔔</span>
+                <span class="badge hidden" id="notifBadge">0</span>
+              </button>
+              <div class="user-pill" id="userPill"></div>
+              <div class="notif-dropdown hidden" id="notifDropdown" aria-hidden="true">
+                <div class="notif-header">Notifications</div>
+                <ul id="notifList"><li class="muted">No notifications</li></ul>
+              </div>
+            </div>
           </header>
 
           <section class="tab-panel active" id="overviewPanel">

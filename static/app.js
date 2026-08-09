@@ -89,6 +89,7 @@ function renderAll() {
   renderStudents();
   renderRules();
   renderOverviewSide();
+  renderNotifications();
 }
 
 function renderMetrics() {
@@ -562,6 +563,35 @@ $$(".tabs button").forEach((button) => button.addEventListener("click", () => se
 document.addEventListener("click", (event) => {
   const deleteButton = event.target.closest("[data-delete-id]");
   if (deleteButton) deleteCertificate(deleteButton.dataset.deleteId);
+});
+
+// Notification rendering and interactions
+function renderNotifications() {
+  const notifs = (state.data && state.data.notifications) || [];
+  const badge = $("#notifBadge");
+  const list = $("#notifList");
+  if (badge) {
+    badge.textContent = notifs.length || 0;
+    badge.classList.toggle("hidden", notifs.length === 0);
+  }
+  if (list) {
+    list.innerHTML = notifs.length
+      ? notifs.map((n) => `<li>${escapeHtml(n.message || n.text || String(n))}</li>`).join("")
+      : `<li class="muted">No notifications</li>`;
+  }
+}
+
+document.addEventListener("click", (event) => {
+  const notifBtn = $("#notifButton");
+  const dropdown = $("#notifDropdown");
+  if (!notifBtn || !dropdown) return;
+  if (notifBtn.contains(event.target)) {
+    dropdown.classList.toggle("hidden");
+    return;
+  }
+  if (!dropdown.contains(event.target)) {
+    dropdown.classList.add("hidden");
+  }
 });
 
 if (localStorage.getItem("certimapTheme") === "dark") document.body.classList.add("dark");
