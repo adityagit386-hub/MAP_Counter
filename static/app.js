@@ -24,9 +24,9 @@ async function api(path, options = {}) {
 }
 
 function visibleTabsForRole(role) {
-  if (role === "student") return ["overview", "upload", "gallery", "reports", "profile"];
-  if (role === "admin") return ["overview", "approvals", "students", "rules", "reports", "profile"];
-  return ["overview", "approvals", "students", "reports", "profile"];
+  if (role === "student") return ["overview", "upload", "gallery", "reports", "profile", "settings"];
+  if (role === "admin") return ["overview", "approvals", "students", "rules", "reports", "profile", "settings"];
+  return ["overview", "approvals", "students", "reports", "profile", "settings"];
 }
 
 function setPanel(tab) {
@@ -64,10 +64,10 @@ async function bootstrap() {
   try {
     state.data = await api("/api/bootstrap");
     state.user = state.data.user;
+    applyTheme(state.user.theme || localStorage.getItem("certimapTheme") || "system");
     $("#authScreen").classList.add("hidden");
     $("#shell").classList.remove("hidden");
     $("#roleLabel").textContent = `${state.user.role} dashboard`;
-    $("#userPill").textContent = `${state.user.name} / ${state.user.role}`;
     $("#csvLink").href = `/api/report.csv?token=${encodeURIComponent(state.token)}`;
     renderAll();
     setPanel(state.activeTab);
@@ -80,6 +80,8 @@ async function bootstrap() {
 function renderAll() {
   populateUploadProfile();
   populateProfileForm();
+  populateSettingsForm();
+  renderTopbarProfile();
   renderMetrics();
   renderWaitingBanner();
   renderCharts();
@@ -135,7 +137,7 @@ function renderOverviewSide() {
     title.textContent = "Student Profile";
     content.innerHTML = `
       <div class="profile-mini">
-        <div class="profile-avatar">${initials(profile.name || state.user.name)}</div>
+        ${avatarMarkup(profile.name || state.user.name, state.user.profile_photo)}
         <div><strong>${escapeHtml(profile.name || state.user.name)}</strong><span>${escapeHtml(profile.roll_number || "")}</span></div>
       </div>
       <p>${escapeHtml(profile.department || "Department not set")}</p>
@@ -396,6 +398,27 @@ async function saveProfile(event) {
   }
 }
 
+async function saveSettings(event) {
+  event.preventDefault();
+  const status = $("#settingsStatus");
+  try {
+    const form = new FormData(event.currentTarget);
+    form.set("notify_dashboard", event.currentTarget.elements.notify_dashboard.checked ? "1" : "0");
+    form.set("notify_email", event.currentTarget.elements.notify_email.checked ? "1" : "0");
+    await api("/api/profile", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.fromEntries(form)),
+    });
+    status.textContent = "Settings saved.";
+    event.currentTarget.elements.current_password.value = "";
+    event.currentTarget.elements.new_password.value = "";
+    await refresh();
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
 async function deleteCertificate(id) {
   if (!confirm("Delete this certificate record and file?")) return;
   try {
@@ -446,10 +469,51 @@ function populateProfileForm() {
   form.elements.email.value = profile.email || "";
   form.elements.notify_dashboard.checked = !!state.user.notify_dashboard;
   form.elements.notify_email.checked = !!state.user.notify_email;
+  form.elements.profile_photo.value = state.user.profile_photo || "";
   ["name", "roll_number", "department", "semester", "academic_year", "email"].forEach((name) => {
     form.elements[name].readOnly = state.user.role !== "student";
   });
-  $("#profileAvatar").textContent = initials(profile.name || state.user.name);
+  renderAvatar($("#profileAvatar"), profile.name || state.user.name, state.user.profile_photo);
+}
+
+function populateSettingsForm() {
+  const form = $("#settingsForm");
+  if (!form || !state.user) return;
+  form.elements.theme.value = state.user.theme || localStorage.getItem("certimapTheme") || "system";
+  form.elements.notify_dashboard.checked = !!state.user.notify_dashboard;
+  form.elements.notify_email.checked = !!state.user.notify_email;
+}
+
+function renderTopbarProfile() {
+  const profile = state.data?.studentProfile || {};
+  renderAvatar($("#topbarAvatar"), profile.name || state.user?.name, state.user?.profile_photo);
+}
+
+function renderAvatar(element, name, photo) {
+  if (!element) return;
+  if (photo) {
+    element.innerHTML = `<img src="${escapeAttr(photo)}" alt="">`;
+  } else {
+    element.textContent = initials(name);
+  }
+}
+
+function avatarMarkup(name, photo) {
+  if (photo) {
+    return `<div class="profile-avatar"><img src="${escapeAttr(photo)}" alt=""></div>`;
+  }
+  return `<div class="profile-avatar">${initials(name)}</div>`;
+}
+
+function applyTheme(theme) {
+  const selected = theme || "system";
+  localStorage.setItem("certimapTheme", selected);
+  const dark = selected === "dark" || (selected === "system" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  document.body.classList.toggle("dark", dark);
+}
+
+function openOAuth(provider) {
+  location.href = `/api/oauth/${provider}/start`;
 }
 
 function renderSelectedFiles(files) {
@@ -540,6 +604,7 @@ $("#showRegister").addEventListener("click", () => setAuthMode("register"));
 $("#uploadForm").addEventListener("submit", uploadCertificates);
 $("#ruleForm").addEventListener("submit", saveRule);
 $("#profileForm").addEventListener("submit", saveProfile);
+$("#settingsForm").addEventListener("submit", saveSettings);
 $("#newRuleButton").addEventListener("click", () => $("#ruleForm").classList.toggle("hidden"));
 $("#searchInput").addEventListener("input", renderRows);
 $("#studentSearchInput").addEventListener("input", renderStudents);
@@ -550,10 +615,30 @@ $("#logoutButton").addEventListener("click", () => {
   state.token = "";
   location.reload();
 });
-$("#themeToggle").addEventListener("click", () => {
-  document.body.classList.toggle("dark");
-  localStorage.setItem("certimapTheme", document.body.classList.contains("dark") ? "dark" : "light");
+$("#settingsButton").addEventListener("click", () => setPanel("settings"));
+$("#profileButton").addEventListener("click", () => setPanel("profile"));
+$("#openProfileFromSettings").addEventListener("click", () => setPanel("profile"));
+$("#settingsForm").elements.theme.addEventListener("change", (event) => applyTheme(event.currentTarget.value));
+$("#profilePhotoInput").addEventListener("change", (event) => {
+  const file = event.currentTarget.files[0];
+  if (!file) return;
+  if (!file.type.startsWith("image/")) {
+    $("#profileStatus").textContent = "Choose an image file.";
+    return;
+  }
+  if (file.size > 650000) {
+    $("#profileStatus").textContent = "Choose an image under 650 KB.";
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    $("#profileForm").elements.profile_photo.value = reader.result;
+    renderAvatar($("#profileAvatar"), $("#profileForm").elements.name.value, reader.result);
+    renderAvatar($("#topbarAvatar"), $("#profileForm").elements.name.value, reader.result);
+  };
+  reader.readAsDataURL(file);
 });
+$$("[data-oauth]").forEach((button) => button.addEventListener("click", () => openOAuth(button.dataset.oauth)));
 $("#fileInput").addEventListener("change", (event) => {
   const count = event.currentTarget.files.length;
   $("#fileSummary").textContent = count ? `${count} file(s) selected` : "No files selected";
@@ -594,5 +679,11 @@ document.addEventListener("click", (event) => {
   }
 });
 
-if (localStorage.getItem("certimapTheme") === "dark") document.body.classList.add("dark");
+const incomingToken = new URLSearchParams(location.search).get("token");
+if (incomingToken) {
+  state.token = incomingToken;
+  localStorage.setItem("certimapToken", incomingToken);
+  history.replaceState({}, "", location.pathname);
+}
+applyTheme(localStorage.getItem("certimapTheme") || "system");
 bootstrap();

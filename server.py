@@ -1,6 +1,6 @@
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 import csv
 import hashlib
 import hmac
@@ -14,6 +14,8 @@ import shutil
 import sqlite3
 import sys
 import time
+import urllib.error
+import urllib.request
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -22,6 +24,7 @@ DATA_DIR = BASE_DIR / "data"
 UPLOAD_DIR = BASE_DIR / "uploads"
 DB_PATH = DATA_DIR / "certimap.db"
 MAX_UPLOAD_BYTES = 30 * 1024 * 1024
+MAX_PROFILE_PHOTO_CHARS = 900_000
 
 LEVELS = ["college", "taluka", "district", "university", "state", "national", "international"]
 
@@ -242,6 +245,8 @@ def init_db():
                 student_id INTEGER REFERENCES students(id),
                 notify_dashboard INTEGER NOT NULL DEFAULT 1,
                 notify_email INTEGER NOT NULL DEFAULT 0,
+                profile_photo TEXT DEFAULT '',
+                theme TEXT NOT NULL DEFAULT 'system',
                 created_at TEXT NOT NULL
             );
 
@@ -314,6 +319,12 @@ def init_db():
                 is_read INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS oauth_states (
+                state TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
             """
         )
         ensure_columns(con)
@@ -327,6 +338,13 @@ def ensure_columns(con):
         con.execute("ALTER TABLE users ADD COLUMN notify_dashboard INTEGER NOT NULL DEFAULT 1")
     if "notify_email" not in user_cols:
         con.execute("ALTER TABLE users ADD COLUMN notify_email INTEGER NOT NULL DEFAULT 0")
+    if "profile_photo" not in user_cols:
+        con.execute("ALTER TABLE users ADD COLUMN profile_photo TEXT DEFAULT ''")
+    if "theme" not in user_cols:
+        con.execute("ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'system'")
+    con.execute("UPDATE users SET username = 'student@certimap.local' WHERE username = 'student@certimap' AND NOT EXISTS (SELECT 1 FROM users WHERE username = 'student@certimap.local')")
+    con.execute("UPDATE users SET username = 'faculty@certimap.local' WHERE username = 'faculty@certimap' AND NOT EXISTS (SELECT 1 FROM users WHERE username = 'faculty@certimap.local')")
+    con.execute("UPDATE users SET username = 'admin@certimap.local' WHERE username = 'admin@certimap' AND NOT EXISTS (SELECT 1 FROM users WHERE username = 'admin@certimap.local')")
 
 
 def seed_defaults(con):
@@ -339,9 +357,9 @@ def seed_defaults(con):
         (now_iso(),),
     )
     users = [
-        ("Aditya Wale", "student@certimap", "student123", "student", 1),
-        ("Faculty Verifier", "faculty@certimap", "faculty123", "faculty", None),
-        ("MAP Administrator", "admin@certimap", "admin123", "admin", None),
+        ("Aditya Wale", "student@certimap.local", "student123", "student", 1),
+        ("Faculty Verifier", "faculty@certimap.local", "faculty123", "faculty", None),
+        ("MAP Administrator", "admin@certimap.local", "admin123", "admin", None),
     ]
     for name, username, password, role, student_id in users:
         con.execute(
@@ -433,31 +451,44 @@ def create_session(con, user_id):
     return token
 
 
+def normalize_email(value):
+    email = str(value or "").strip().lower()
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        raise ValueError("Enter a valid email address.")
+    return email
+
+
+def display_name_from_email(email):
+    name = email.split("@", 1)[0].replace(".", " ").replace("_", " ").replace("-", " ").strip()
+    return " ".join(part.capitalize() for part in name.split()) or email
+
+
 def register_student(payload):
-    required = ["name", "username", "password", "roll_number", "department"]
+    required = ["email", "password"]
     missing = [key for key in required if not str(payload.get(key, "")).strip()]
     if missing:
         raise ValueError(f"Missing required field: {', '.join(missing)}")
+    email = normalize_email(payload["email"])
     password = str(payload["password"])
     if len(password) < 6:
         raise ValueError("Password must be at least 6 characters.")
     with get_db() as con:
-        if con.execute("SELECT id FROM users WHERE username = ?", (payload["username"].strip(),)).fetchone():
-            raise ValueError("Username is already registered.")
-        if con.execute("SELECT id FROM students WHERE roll_number = ?", (payload["roll_number"].strip(),)).fetchone():
-            raise ValueError("Roll number is already registered.")
+        if con.execute("SELECT id FROM users WHERE lower(username) = ?", (email,)).fetchone():
+            raise ValueError("Email is already registered.")
+        name = display_name_from_email(email)
+        roll_number = f"PENDING-{hashlib.sha1(email.encode('utf-8')).hexdigest()[:8].upper()}"
         cur = con.execute(
             """
             INSERT INTO students (name, roll_number, department, semester, academic_year, email, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                payload["name"].strip(),
-                payload["roll_number"].strip(),
-                payload["department"].strip(),
-                payload.get("semester", "").strip(),
-                payload.get("academic_year", "").strip(),
-                payload.get("email", "").strip(),
+                name,
+                roll_number,
+                "Not set",
+                "",
+                "",
+                email,
                 now_iso(),
             ),
         )
@@ -467,7 +498,7 @@ def register_student(payload):
             INSERT INTO users (name, username, password_hash, role, student_id, created_at)
             VALUES (?, ?, ?, 'student', ?, ?)
             """,
-            (payload["name"].strip(), payload["username"].strip(), password_hash(password), student_id, now_iso()),
+            (name, email, password_hash(password), student_id, now_iso()),
         )
         user_id = user_cur.lastrowid
         token = create_session(con, user_id)
@@ -475,6 +506,150 @@ def register_student(payload):
         con.commit()
         row = con.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         return token, row_to_dict(row)
+
+
+OAUTH_CONFIG = {
+    "google": {
+        "client_id_env": "GOOGLE_CLIENT_ID",
+        "client_secret_env": "GOOGLE_CLIENT_SECRET",
+        "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_url": "https://oauth2.googleapis.com/token",
+        "userinfo_url": "https://openidconnect.googleapis.com/v1/userinfo",
+        "scope": "openid email profile",
+    },
+    "linkedin": {
+        "client_id_env": "LINKEDIN_CLIENT_ID",
+        "client_secret_env": "LINKEDIN_CLIENT_SECRET",
+        "auth_url": "https://www.linkedin.com/oauth/v2/authorization",
+        "token_url": "https://www.linkedin.com/oauth/v2/accessToken",
+        "userinfo_url": "https://api.linkedin.com/v2/userinfo",
+        "scope": "openid profile email",
+    },
+}
+
+
+def base_url(handler):
+    proto = handler.headers.get("X-Forwarded-Proto", "http")
+    host = handler.headers.get("Host", f"127.0.0.1:{os.environ.get('PORT', '8765')}")
+    return f"{proto}://{host}"
+
+
+def oauth_callback_url(handler, provider):
+    return f"{base_url(handler)}/api/oauth/{provider}/callback"
+
+
+def oauth_start(handler, provider):
+    config = OAUTH_CONFIG.get(provider)
+    if not config:
+        text_response(handler, "OAuth provider not found.", 404)
+        return
+    client_id = os.environ.get(config["client_id_env"], "").strip()
+    client_secret = os.environ.get(config["client_secret_env"], "").strip()
+    if not client_id or not client_secret:
+        json_response(
+            handler,
+            {"error": f"{provider.title()} login is not configured. Add {config['client_id_env']} and {config['client_secret_env']}."},
+            400,
+        )
+        return
+    state = secrets.token_urlsafe(24)
+    with get_db() as con:
+        con.execute("DELETE FROM oauth_states WHERE created_at < ?", (int(time.time()) - 600,))
+        con.execute("INSERT INTO oauth_states (state, provider, created_at) VALUES (?, ?, ?)", (state, provider, int(time.time())))
+        con.commit()
+    params = {
+        "client_id": client_id,
+        "redirect_uri": oauth_callback_url(handler, provider),
+        "response_type": "code",
+        "scope": config["scope"],
+        "state": state,
+    }
+    handler.send_response(302)
+    handler.send_header("Location", f"{config['auth_url']}?{urlencode(params)}")
+    handler.end_headers()
+
+
+def oauth_post(url, data):
+    body = urlencode(data).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=15) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def oauth_get(url, token):
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def oauth_complete(handler, provider, query):
+    config = OAUTH_CONFIG.get(provider)
+    state = query.get("state", [""])[0]
+    code = query.get("code", [""])[0]
+    if not config or not state or not code:
+        text_response(handler, "OAuth login could not be completed.", 400)
+        return
+    with get_db() as con:
+        found = con.execute("SELECT * FROM oauth_states WHERE state = ? AND provider = ?", (state, provider)).fetchone()
+        con.execute("DELETE FROM oauth_states WHERE state = ?", (state,))
+        con.commit()
+    if not found or int(found["created_at"]) < int(time.time()) - 600:
+        text_response(handler, "OAuth session expired. Try signing in again.", 400)
+        return
+    try:
+        token_payload = oauth_post(
+            config["token_url"],
+            {
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": oauth_callback_url(handler, provider),
+                "client_id": os.environ.get(config["client_id_env"], ""),
+                "client_secret": os.environ.get(config["client_secret_env"], ""),
+            },
+        )
+        access_token = token_payload.get("access_token")
+        if not access_token:
+            raise ValueError("OAuth provider did not return an access token.")
+        profile = oauth_get(config["userinfo_url"], access_token)
+    except (urllib.error.URLError, ValueError, json.JSONDecodeError) as exc:
+        text_response(handler, f"OAuth login failed: {exc}", 400)
+        return
+    email = normalize_email(profile.get("email", ""))
+    name = str(profile.get("name") or profile.get("localizedFirstName") or display_name_from_email(email)).strip()
+    picture = str(profile.get("picture") or "").strip()
+    with get_db() as con:
+        user = con.execute("SELECT * FROM users WHERE lower(username) = ?", (email,)).fetchone()
+        if user:
+            con.execute("UPDATE users SET name = COALESCE(NULLIF(?, ''), name), profile_photo = COALESCE(NULLIF(?, ''), profile_photo) WHERE id = ?", (name, picture, user["id"]))
+            user_id = user["id"]
+        else:
+            roll_number = f"OAUTH-{hashlib.sha1(email.encode('utf-8')).hexdigest()[:8].upper()}"
+            cur = con.execute(
+                """
+                INSERT INTO students (name, roll_number, department, semester, academic_year, email, created_at)
+                VALUES (?, ?, 'Not set', '', '', ?, ?)
+                """,
+                (name, roll_number, email, now_iso()),
+            )
+            user_cur = con.execute(
+                """
+                INSERT INTO users (name, username, password_hash, role, student_id, profile_photo, created_at)
+                VALUES (?, ?, '', 'student', ?, ?, ?)
+                """,
+                (name, email, cur.lastrowid, picture, now_iso()),
+            )
+            user_id = user_cur.lastrowid
+        token = create_session(con, user_id)
+        log_action(con, user_id, f"{provider}_login", "session", None, "")
+        con.commit()
+    handler.send_response(302)
+    handler.send_header("Location", f"/?token={token}")
+    handler.end_headers()
 
 
 def log_action(con, user_id, action, entity, entity_id=None, details=""):
@@ -746,7 +921,7 @@ def dashboard_payload(user):
     return {
         "user": {
             key: user[key]
-            for key in ["id", "name", "username", "role", "student_id", "notify_dashboard", "notify_email"]
+            for key in ["id", "name", "username", "role", "student_id", "notify_dashboard", "notify_email", "profile_photo", "theme"]
         },
         "studentProfile": row_to_dict(student_profile),
         "stats": {
@@ -864,19 +1039,39 @@ def reset_certificate_points(certificate_id, user):
 def update_profile(payload, user):
     notify_dashboard = 1 if payload.get("notify_dashboard") in (True, "true", "1", "on", 1) else 0
     notify_email = 1 if payload.get("notify_email") in (True, "true", "1", "on", 1) else 0
+    theme = str(payload.get("theme", user.get("theme") or "system")).strip()
+    if theme not in ("system", "light", "dark"):
+        theme = "system"
+    profile_photo = str(payload.get("profile_photo", user.get("profile_photo") or "") or "").strip()
+    if profile_photo and not (profile_photo.startswith("data:image/") or profile_photo.startswith("http://") or profile_photo.startswith("https://")):
+        raise ValueError("Profile photo must be an image.")
+    if len(profile_photo) > MAX_PROFILE_PHOTO_CHARS:
+        raise ValueError("Profile photo is too large. Choose a smaller image.")
+    current_password = str(payload.get("current_password", "") or "")
+    new_password = str(payload.get("new_password", "") or "")
     with get_db() as con:
+        password_update = ""
+        params = [notify_dashboard, notify_email, theme, profile_photo, user["id"]]
+        if new_password:
+            if len(new_password) < 6:
+                raise ValueError("New password must be at least 6 characters.")
+            if user.get("password_hash") and not hmac.compare_digest(user["password_hash"], password_hash(current_password)):
+                raise ValueError("Current password is incorrect.")
+            password_update = ", password_hash = ?"
+            params.insert(-1, password_hash(new_password))
         con.execute(
-            "UPDATE users SET notify_dashboard = ?, notify_email = ? WHERE id = ?",
-            (notify_dashboard, notify_email, user["id"]),
+            f"UPDATE users SET notify_dashboard = ?, notify_email = ?, theme = ?, profile_photo = ?{password_update} WHERE id = ?",
+            params,
         )
-        if user["role"] == "student" and user["student_id"]:
+        profile_keys = {"name", "roll_number", "department", "semester", "academic_year", "email"}
+        if user["role"] == "student" and user["student_id"] and profile_keys.intersection(payload.keys()):
             values = {
                 "name": payload.get("name", user["name"]).strip() or user["name"],
-                "roll_number": payload.get("roll_number", "").strip(),
-                "department": payload.get("department", "").strip(),
+                "roll_number": payload.get("roll_number", "").strip() or f"PENDING-{hashlib.sha1(str(user['id']).encode('utf-8')).hexdigest()[:8].upper()}",
+                "department": payload.get("department", "").strip() or "Not set",
                 "semester": payload.get("semester", "").strip(),
                 "academic_year": payload.get("academic_year", "").strip(),
-                "email": payload.get("email", "").strip(),
+                "email": normalize_email(payload.get("email", user["username"])),
                 "id": user["student_id"],
             }
             existing = con.execute(
@@ -885,6 +1080,12 @@ def update_profile(payload, user):
             ).fetchone()
             if existing:
                 raise ValueError("Roll number is already used by another student.")
+            existing_email = con.execute(
+                "SELECT id FROM users WHERE lower(username) = ? AND id != ?",
+                (values["email"], user["id"]),
+            ).fetchone()
+            if existing_email:
+                raise ValueError("Email is already used by another account.")
             con.execute(
                 """
                 UPDATE students
@@ -894,7 +1095,9 @@ def update_profile(payload, user):
                 """,
                 values,
             )
-            con.execute("UPDATE users SET name = ? WHERE id = ?", (values["name"], user["id"]))
+            con.execute("UPDATE users SET name = ?, username = ? WHERE id = ?", (values["name"], values["email"], user["id"]))
+        elif payload.get("name"):
+            con.execute("UPDATE users SET name = ? WHERE id = ?", (str(payload.get("name")).strip() or user["name"], user["id"]))
         log_action(con, user["id"], "update", "profile", user["id"], "")
         con.commit()
         updated_user = con.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
@@ -1020,6 +1223,14 @@ class CertiMapHandler(BaseHTTPRequestHandler):
                 user = require_user(self)
                 if user:
                     self.serve_file(UPLOAD_DIR / parsed.path.removeprefix("/uploads/"), as_attachment=False)
+            elif parsed.path == "/api/oauth/google/start":
+                oauth_start(self, "google")
+            elif parsed.path == "/api/oauth/linkedin/start":
+                oauth_start(self, "linkedin")
+            elif parsed.path == "/api/oauth/google/callback":
+                oauth_complete(self, "google", parse_qs(parsed.query))
+            elif parsed.path == "/api/oauth/linkedin/callback":
+                oauth_complete(self, "linkedin", parse_qs(parsed.query))
             elif parsed.path == "/api/bootstrap":
                 user = require_user(self)
                 if user:
@@ -1049,12 +1260,12 @@ class CertiMapHandler(BaseHTTPRequestHandler):
             parsed = urlparse(self.path)
             if parsed.path == "/api/login":
                 payload = parse_body(self)
-                username = payload.get("username", "")
+                email = normalize_email(payload.get("email", ""))
                 password = payload.get("password", "")
                 with get_db() as con:
-                    row = con.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+                    row = con.execute("SELECT * FROM users WHERE lower(username) = ?", (email,)).fetchone()
                     if not row or not hmac.compare_digest(row["password_hash"], password_hash(password)):
-                        json_response(self, {"error": "Invalid username or password."}, 401)
+                        json_response(self, {"error": "Invalid email or password."}, 401)
                         return
                     token = create_session(con, row["id"])
                     log_action(con, row["id"], "login", "session", None, "")

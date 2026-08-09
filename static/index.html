@@ -9,41 +9,37 @@
   <body>
     <main id="app">
       <section class="auth-screen" id="authScreen">
-        <div class="auth-copy">
-          <div class="brand-row">
+        <section class="auth-card">
+          <div class="auth-brand">
             <div class="brand-mark">CM</div>
             <div>
               <span class="eyebrow">Certificate Portal</span>
               <h1>CertiMAP AI</h1>
             </div>
           </div>
-          <p>Login or register to submit certificates and track your MAP point approval status.</p>
-        </div>
-
-        <section class="auth-card">
           <div class="auth-toggle">
             <button class="active" id="showLogin" type="button">Login</button>
             <button id="showRegister" type="button">Register</button>
           </div>
 
           <form id="loginForm" class="auth-form">
-            <label>Username<input name="username" placeholder="Enter username" autocomplete="username"></label>
+            <label>Email<input name="email" placeholder="name@example.com" type="email" autocomplete="email" required></label>
             <label>Password<input name="password" placeholder="Enter password" type="password" autocomplete="current-password"></label>
             <button type="submit">Sign in</button>
+            <div class="oauth-actions">
+              <button class="oauth-btn" data-oauth="google" type="button">G</button>
+              <button class="oauth-btn linkedin" data-oauth="linkedin" type="button">in</button>
+            </div>
           </form>
 
           <form id="registerForm" class="auth-form hidden">
-            <div class="form-grid compact">
-              <label>Name<input name="name" placeholder="Student name" required></label>
-              <label>Username<input name="username" placeholder="email or username" required></label>
-              <label>Password<input name="password" type="password" minlength="6" required></label>
-              <label>Roll number<input name="roll_number" required></label>
-              <label>Department<input name="department" required></label>
-              <label>Semester<input name="semester"></label>
-              <label>Academic year<input name="academic_year"></label>
-              <label>Email<input name="email" type="email"></label>
+            <label>Email<input name="email" placeholder="name@example.com" type="email" autocomplete="email" required></label>
+            <label>Password<input name="password" type="password" minlength="6" autocomplete="new-password" required></label>
+            <button type="submit">Create account</button>
+            <div class="oauth-actions">
+              <button class="oauth-btn" data-oauth="google" type="button">G</button>
+              <button class="oauth-btn linkedin" data-oauth="linkedin" type="button">in</button>
             </div>
-            <button type="submit">Create student account</button>
           </form>
         </section>
       </section>
@@ -68,7 +64,6 @@
             <button data-tab="profile">Profile</button>
           </nav>
           <div class="sidebar-actions">
-            <button class="ghost" id="themeToggle" type="button">Theme</button>
             <button class="ghost" id="logoutButton" type="button">Sign out</button>
           </div>
         </aside>
@@ -84,7 +79,12 @@
                 <span class="icon-bell" aria-hidden="true">🔔</span>
                 <span class="badge hidden" id="notifBadge">0</span>
               </button>
-              <div class="user-pill" id="userPill"></div>
+              <button id="settingsButton" class="icon-btn" aria-label="Settings" type="button" title="Settings">
+                <span aria-hidden="true">&#9881;</span>
+              </button>
+              <button class="profile-chip" id="profileButton" type="button" aria-label="Open profile" title="Profile">
+                <span class="profile-avatar mini" id="topbarAvatar">CM</span>
+              </button>
               <div class="notif-dropdown hidden" id="notifDropdown" aria-hidden="true">
                 <div class="notif-header">Notifications</div>
                 <ul id="notifList"><li class="muted">No notifications</li></ul>
@@ -249,7 +249,10 @@
                 <h3>User Profile</h3>
               </div>
               <form id="profileForm" class="profile-form">
-                <div class="profile-avatar" id="profileAvatar">CM</div>
+                <div class="profile-photo-row">
+                  <div class="profile-avatar" id="profileAvatar">CM</div>
+                  <label class="photo-picker">Profile photo<input name="profile_photo_file" id="profilePhotoInput" type="file" accept="image/*"></label>
+                </div>
                 <div class="form-grid">
                   <label>Name<input name="name"></label>
                   <label>Roll number<input name="roll_number"></label>
@@ -258,12 +261,50 @@
                   <label>Academic year<input name="academic_year"></label>
                   <label>Email<input name="email" type="email"></label>
                 </div>
+                <input name="profile_photo" type="hidden">
                 <div class="toggle-row">
                   <label class="toggle-label"><input name="notify_dashboard" type="checkbox"> Dashboard notifications</label>
                   <label class="toggle-label"><input name="notify_email" type="checkbox"> Email notifications</label>
                 </div>
                 <button type="submit">Save profile</button>
                 <p class="muted" id="profileStatus"></p>
+              </form>
+            </section>
+          </section>
+
+          <section class="tab-panel" id="settingsPanel">
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Settings</h3>
+              </div>
+              <form id="settingsForm" class="settings-form">
+                <div class="settings-group">
+                  <h4>Appearance</h4>
+                  <label>Theme
+                    <select name="theme">
+                      <option value="system">System</option>
+                      <option value="light">Light</option>
+                      <option value="dark">Dark</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="settings-group">
+                  <h4>Notifications</h4>
+                  <label class="toggle-label"><input name="notify_dashboard" type="checkbox"> Dashboard notifications</label>
+                  <label class="toggle-label"><input name="notify_email" type="checkbox"> Email notifications</label>
+                </div>
+                <div class="settings-group">
+                  <h4>Password</h4>
+                  <div class="form-grid">
+                    <label>Current password<input name="current_password" type="password" autocomplete="current-password"></label>
+                    <label>New password<input name="new_password" type="password" minlength="6" autocomplete="new-password"></label>
+                  </div>
+                </div>
+                <div class="actions">
+                  <button type="submit">Save settings</button>
+                  <button class="subtle" id="openProfileFromSettings" type="button">Edit profile</button>
+                </div>
+                <p class="muted" id="settingsStatus"></p>
               </form>
             </section>
           </section>
