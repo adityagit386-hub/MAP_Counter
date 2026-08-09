@@ -20,8 +20,6 @@ Open http://127.0.0.1:8765
 ## Demo Logins
 
 - Student: `student@certimap` / `student123`
-- Faculty: `faculty@certimap` / `faculty123`
-- Admin: `admin@certimap` / `admin123`
 
 ## Storage
 
